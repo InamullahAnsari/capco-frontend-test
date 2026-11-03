@@ -112,7 +112,12 @@ export function SignInForm({
       // default or an untrusted returnTo query parameter.
       onSuccess(destination)
     } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 400) {
+      if (
+        cause instanceof Error &&
+        cause.message.includes('valid journey URL')
+      ) {
+        setError(cause.message)
+      } else if (cause instanceof ApiError && cause.status === 400) {
         for (const item of cause.errors) {
           if (item.source?.pointer?.endsWith('/email')) {
             setEmailError(item.detail ?? 'Enter a valid email address.')
@@ -120,10 +125,12 @@ export function SignInForm({
             setPasswordError(item.detail ?? 'Check your password.')
           }
         }
+
         const hasMappedFieldError = cause.errors.some((item) =>
           item.source?.pointer?.endsWith('/email') ||
           item.source?.pointer?.endsWith('/password'),
         )
+
         if (!hasMappedFieldError) {
           setError(getLoginError(cause))
         }
@@ -143,6 +150,7 @@ export function SignInForm({
           <Stack
             component="form"
             className={styles.form}
+            aria-label="Sign in"
             aria-busy={isPending}
             onSubmit={(event) => {
               event.preventDefault()

@@ -27,35 +27,62 @@ export class ApiError extends Error {
   }
 }
 
-interface JsonApiDocument {
+interface JsonApiErrorDocument {
   errors?: JsonApiError[]
 }
 
-export async function postJsonApi<TResponse = unknown>(
-  path: string,
-  body: unknown,
-): Promise<TResponse> {
-  let response: Response
+function csrfTokenFromCookie(): string | undefined {
+  if (typeof document === 'undefined') return undefined
 
+  const cookie = document.cookie
+    .split('; ')
+    .find((part) => part.startsWith('XSRF-TOKEN='))
+
+  if (!cookie) return undefined
+
+  const value = cookie.slice('XSRF-TOKEN='.length)
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+async function requestJsonApi<TResponse>(
+  path: string,
+  method: 'GET' | 'POST' | 'PATCH',
+  body?: unknown,
+): Promise<TResponse> {
+  const headers: Record<string, string> = {
+    Accept: JSON_API_MEDIA_TYPE,
+  }
+
+  if (body !== undefined) {
+    headers['Content-Type'] = JSON_API_MEDIA_TYPE
+  }
+
+  if (method === 'PATCH') {
+    const csrfToken = csrfTokenFromCookie()
+    if (csrfToken) headers['X-XSRF-TOKEN'] = csrfToken
+  }
+
+  let response: Response
   try {
     response = await fetch(path, {
-      method: 'POST',
-      headers: {
-        Accept: JSON_API_MEDIA_TYPE,
-        'Content-Type': JSON_API_MEDIA_TYPE,
-      },
-      body: JSON.stringify(body),
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       credentials: 'include',
     })
   } catch {
     throw new Error(
-      'Unable to connect. Check your internet connection and try again.',
+      'Unable to connect. Check your connection and try again.',
     )
   }
 
   if (!response.ok) {
     const document = (await response.json().catch(() => null)) as
-      | JsonApiDocument
+      | JsonApiErrorDocument
       | null
     const errors = Array.isArray(document?.errors) ? document.errors : []
     const firstError = errors[0]
@@ -72,16 +99,32 @@ export async function postJsonApi<TResponse = unknown>(
     )
   }
 
-  if (response.status === 204) {
-    return undefined as TResponse
-  }
+  if (response.status === 204) return undefined as TResponse
 
-  // Some successful JSON:API operations, including account creation,
-  // intentionally return headers only and have no response document.
   const responseBody = await response.text()
-  if (!responseBody) {
-    return undefined as TResponse
-  }
+  if (!responseBody) return undefined as TResponse
 
-  return JSON.parse(responseBody) as TResponse
+  try {
+    return JSON.parse(responseBody) as TResponse
+  } catch {
+    throw new Error('The server returned an unreadable response. Please try again.')
+  }
+}
+
+export function getJsonApi<TResponse>(path: string): Promise<TResponse> {
+  return requestJsonApi<TResponse>(path, 'GET')
+}
+
+export function postJsonApi<TResponse = unknown>(
+  path: string,
+  body?: unknown,
+): Promise<TResponse> {
+  return requestJsonApi<TResponse>(path, 'POST', body)
+}
+
+export function patchJsonApi<TResponse = unknown>(
+  path: string,
+  body: unknown,
+): Promise<TResponse> {
+  return requestJsonApi<TResponse>(path, 'PATCH', body)
 }
