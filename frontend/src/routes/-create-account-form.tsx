@@ -10,6 +10,8 @@ import {
 } from '@kyc/ui'
 import { useEffect, useRef, useState } from 'react'
 
+import { ApiError } from '../services/api-client'
+import { registerApplicant } from '../services/auth.api'
 import { accountAccessHref } from './-return-target'
 import styles from './account-access.module.css'
 
@@ -21,40 +23,126 @@ export interface CreateAccountFormProps {
 const passwordGuidance =
   'Use at least six characters, including one uppercase letter and one special character.'
 
+function validatePassword(password: string): string | undefined {
+  if (password.length < 6) {
+    return 'Password must contain at least six characters.'
+  }
+  if (!/[A-Z]/.test(password)) {
+    return 'Password must contain at least one uppercase letter.'
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    return 'Password must contain at least one special character.'
+  }
+  return undefined
+}
+
+function getRegistrationError(cause: unknown): string {
+  if (cause instanceof ApiError) {
+    if (cause.status === 409) {
+      return 'An account already exists for this email address. Please sign in instead.'
+    }
+    if (cause.status === 429) {
+      const seconds = Number(cause.retryAfter)
+      return Number.isFinite(seconds) && seconds > 0
+        ? `Too many attempts. Please try again in ${seconds} seconds.`
+        : 'Too many attempts. Please try again later.'
+    }
+    if (cause.status === 400) {
+      return 'Some registration details are invalid. Please review the highlighted fields.'
+    }
+    return cause.message || 'We could not create your account. Please try again.'
+  }
+
+  if (cause instanceof Error) {
+    return cause.message
+  }
+
+  return 'An unexpected error occurred. Please try again.'
+}
+
 export function CreateAccountForm({
   onNavigate,
   returnTo,
 }: CreateAccountFormProps) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState<string>()
   const [emailError, setEmailError] = useState<string>()
   const [passwordError, setPasswordError] = useState<string>()
-  const [successMessage, setSuccessMessage] = useState<string>()
+  const [confirmPasswordError, setConfirmPasswordError] = useState<string>()
+  const [success, setSuccess] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const emailInput = useRef<HTMLInputElement>(null)
   const passwordInput = useRef<HTMLInputElement>(null)
+  const confirmPasswordInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (emailError) {
       emailInput.current?.focus()
     } else if (passwordError) {
       passwordInput.current?.focus()
+    } else if (confirmPasswordError) {
+      confirmPasswordInput.current?.focus()
     }
-  }, [emailError, passwordError])
+  }, [emailError, passwordError, confirmPasswordError])
 
   async function submit(): Promise<void> {
+    if (isSubmitting) return
+
     setError(undefined)
     setEmailError(undefined)
     setPasswordError(undefined)
-    setSuccessMessage(undefined)
+    setConfirmPasswordError(undefined)
+    setSuccess(false)
 
+    const normalizedEmail = email.trim()
+    let hasValidationError = false
+
+    if (!normalizedEmail) {
+      setEmailError('Enter your email address.')
+      hasValidationError = true
+    } else if (emailInput.current?.validity.typeMismatch) {
+      setEmailError('Enter a valid email address.')
+      hasValidationError = true
+    }
+
+    const passwordValidationError = validatePassword(password)
+    if (passwordValidationError) {
+      setPasswordError(passwordValidationError)
+      hasValidationError = true
+    }
+
+    if (!confirmPassword) {
+      setConfirmPasswordError('Confirm your password.')
+      hasValidationError = true
+    } else if (password !== confirmPassword) {
+      setConfirmPasswordError('Passwords do not match.')
+      hasValidationError = true
+    }
+
+    if (hasValidationError) return
+
+    setIsSubmitting(true)
     try {
+      await registerApplicant(normalizedEmail, password)
       setPassword('')
-      setSuccessMessage(
-        'Account form is ready. Sign-in is available for this prototype.',
-      )
-    } catch {
-      setError('Account form could not be completed.')
+      setConfirmPassword('')
+      setSuccess(true)
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 400) {
+        for (const apiError of cause.errors) {
+          const pointer = apiError.source?.pointer
+          if (pointer?.endsWith('/email')) {
+            setEmailError(apiError.detail ?? 'Enter a valid email address.')
+          } else if (pointer?.endsWith('/password')) {
+            setPasswordError(apiError.detail ?? passwordGuidance)
+          }
+        }
+      }
+      setError(getRegistrationError(cause))
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -70,6 +158,7 @@ export function CreateAccountForm({
               void submit()
             }}
             spacing={3}
+            aria-busy={isSubmitting}
           >
             <Stack spacing={1}>
               <Typography component="h1" variant="heading">
@@ -79,14 +168,14 @@ export function CreateAccountForm({
                 Create credentials to begin your KYC application.
               </Typography>
             </Stack>
-            {(error ?? emailError ?? passwordError) ? (
+            {error ? (
               <Alert aria-live="assertive" role="alert" severity="error">
-                {error ?? emailError ?? passwordError}
+                {error}
               </Alert>
             ) : null}
-            {successMessage ? (
+            {success ? (
               <Alert aria-live="polite" role="status" severity="success">
-                {successMessage}
+                Your account has been created. You can now sign in.
               </Alert>
             ) : null}
             <TextField
@@ -123,13 +212,31 @@ export function CreateAccountForm({
               type="password"
               value={password}
             />
+            <TextField
+              autoComplete="new-password"
+              error={Boolean(confirmPasswordError)}
+              fullWidth
+              helperText={confirmPasswordError}
+              id="applicant-confirm-password"
+              inputRef={confirmPasswordInput}
+              label="Confirm password"
+              name="confirmPassword"
+              onChange={(event) => {
+                setConfirmPassword(event.target.value)
+                setConfirmPasswordError(undefined)
+              }}
+              required
+              type="password"
+              value={confirmPassword}
+            />
             <Button
               className={styles.submit}
+              disabled={isSubmitting}
               fullWidth
               size="large"
               type="submit"
             >
-              Create account
+              {isSubmitting ? 'Creating account…' : 'Create account'}
             </Button>
             <Typography
               className={styles.footer}
